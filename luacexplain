@@ -1,0 +1,380 @@
+#!/usr/bin/env lua
+
+----------------------------------- Utils ------------------------------------
+
+local append = table.insert
+
+---
+-- Reads a file's contents.
+local function slurp(path)
+  local f = assert(io.open(path))
+  local s = f:read("*a")
+  f:close()
+  return s
+end
+
+---
+-- Trims a string.
+local function trim(s)
+  return s:match('^%s*(.-)%s*$')
+end
+
+---
+-- Iterates over lines.
+local function nlines(s)
+  return s:gmatch('([^\n]*)\n')
+end
+
+---
+-- Parses the numbers in a string into a table.
+-- Returns *nothing* (not even an empty table) if it finds none.
+local function parse_nums(s)
+  local nums = {}
+  for num in s:gmatch('%S+') do
+    append(nums, tonumber(num))
+  end
+  return nums[1] and nums
+end
+
+---
+-- Returns the dirname() of a path. Or an empty string if it gets baffled.
+local function dirname(path)
+  return path:match('.*[/\\]') or ''
+end
+
+---
+-- If a string has a newline, cleans the whitespaces surrounding it, and optionally indent.
+local function canonical_nl(s, indentation)
+  return (s:gsub('%s*\n%s*', '\n' .. (indentation or '')))
+end
+
+---
+-- Indents a string.
+-- If the string contains several lines (newline-delimited), they all will be indented.
+local function indent(s, indentation)
+  return indentation .. s:gsub('\n', '\n' .. indentation)
+end
+
+---
+-- Merges associative arrays.
+local function merge(base, ext, ...)
+  if ext then
+    for k, v in pairs(ext) do
+      base[k] = v
+    end
+    return merge(base, ...)
+  else
+    return base
+  end
+end
+
+---
+-- Parses command-line options.
+--
+-- For example, when the program is executed as "program -a -v --help whatever",
+-- returns { a=true, v=true, whatever=true } and additionally removes these from 'args'.
+--
+local function parse_options(args)
+  local opts = {}
+  while args[1] and args[1]:match('^-') do
+    opts[ args[1]:match('^-+(.*)') ] = true
+    table.remove(args, 1)
+  end
+  return opts
+end
+
+---------------------------------- Parsers -----------------------------------
+
+--[[
+
+Parses the operators information out of Lua's header file (lopcodes.h).
+
+In other words, it turns the string:
+
+  OP_MOVE,/*	A B	R(A) := R(B)					*/
+  OP_LOADK,/*	A Bx	R(A) := Kst(Bx)					*/
+
+Into:
+
+  {
+    MOVE = {
+      signature = "A B",
+      doc = "R(A) := R(B)",
+      args = { "R", "R" }
+    },
+    LOADK = {
+      signature = "A Bx",
+      doc = "R(A) := Kst(Bx)",
+      args = { "R", "Kst" }
+    },
+  }
+
+]]
+
+local function parse_ops_info(s)
+
+  -- Extracts the operand types from the doc-string.
+  local function parse_operand_types(doc)
+    local args = {}
+    local arg_indices = { A = 1, Ax = 1, B = 2, Bx = 2, sBx = 2, C = 3 }
+    for typ, v in doc:gmatch('(%w+)[%(%[]([ABCxs]+)[%)%]]') do  -- This matches "UpValue[A]", "RK[Bx]", etc.
+      args[arg_indices[v]] = typ
+    end
+    return args
+  end
+
+  local data = {}
+  for op, args, doc in s:gmatch('OP_(%w+),?/%*\t+(.-)\t+(.-)%*/') do
+    data[op] = {
+      signature = args,
+      doc = canonical_nl(trim(doc), '  '),
+      operand_types = parse_operand_types(doc),
+    }
+  end
+  return data
+end
+
+--[[
+
+Parses information about functions out of luac's output. It parses just
+their data: the list of constants, locals, and upvalues.
+
+For example, it turns the string:
+
+  function <cl.lua:91,97> (14 instructions, 56 bytes at 0x846c980)
+  1 param, 6 slots, 1 upvalue, 5 locals, 2 constants, 0 functions
+  	1	[92]	GETUPVAL 	1 0
+  	2	[92]	LEN      	1 1
+  	3	[92]	LOADK    	2 -1
+  	...
+  	14	[97]	RETURN   	0 1
+  constants (2) for 0x846c980:
+  	1	1
+  	2	-1
+  locals (5) for 0x846c980:
+  	0	v	1	14
+  	1	(for index)	5	14
+  	2	(for limit)	5	14
+  	3	(for step)	5	14
+  	4	i	6	13
+  upvalues (1) for 0x846c980:
+  	0	rgb_val
+
+Into:
+
+  {
+    ["0x8f46980"] = {
+      constants = {
+        { name = "1" },
+        { name = "-1" }
+      },
+      locals = {
+        [0] = {
+          name = "v",
+          range = { 1, 14 }
+        },
+        {
+          name = "(for index)",
+          range = { 5, 14 }
+        },
+        {
+          name = "(for limit)",
+          range = { 5, 14 }
+        },
+        {
+          name = "(for step)",
+          range = { 5, 14 }
+        },
+        {
+          name = "i",
+          range = { 6, 13 }
+        }
+      },
+      upvalues = {
+        [0] = { name = "rgb_val" }
+      }
+    },
+  }
+
+]]
+
+local function parse_funcs_info(src)
+  local data = {}
+  local fn_addr, slot
+  for ln in nlines(src) do
+    if not ln:match('^\t') then
+      slot = nil
+    end
+    if slot then
+      -- A variable/constant line.
+      local num_str, name, trailing = ln:match('^\t([%d-]+)\t([^\t]+)(.*)')
+      local record = {
+        name = name,
+        range = parse_nums(trailing),
+      }
+      data[fn_addr][slot][tonumber(num_str)] = record
+    end
+    if not slot then
+      -- A header line.
+      slot, fn_addr = ln:match('^(%w+) .* for (0x%x+)')
+      if slot then
+        data[fn_addr] = data[fn_addr] or {}
+        data[fn_addr][slot] = {}
+      end
+    end
+  end
+  return data
+end
+
+------------------------------- The decorator --------------------------------
+
+--[[
+
+Enhances luac's output.
+
+This is the gist of this program. It turn lines of the form:
+
+       14      [224]   LOADK           12 -3
+
+into:
+
+       14      [224]   LOADK           12 -3
+                                               ;; R(A) := Kst(Bx)
+                                               ;; 12<var_name> -3<"some const">
+]]
+
+--local DBG = true  -- Enable this to add some debugging info. You'll need the p/pp global functions (pretty printers).
+local interpret_args  -- forward declaration.
+
+local function decorate(src, ops_info, funcs_info)
+
+  local indentation = string.rep(' ', 47) .. ';; '
+  local indent = function(s) return indent(s, indentation) end
+
+  local func = nil
+
+  for ln in nlines(src) do
+    print(ln)
+    -- The following matches function headers, such as "function <cl.lua:91,97> ... 56 bytes at 0x846c980)".
+    if ln:match('^%w') then
+      local fn_addr = ln:match('at (0x%x+)')
+      if fn_addr then  -- Yes, we're starting a new function.
+        func = funcs_info[fn_addr]
+        if DBG then p(func) end
+      end
+    end
+    -- The following matches instruction lines, such as "  14      [224]   LOADK           12 -3  ; whatever".
+    local program_counter_str, op, nums_str = ln:match('(%d+)%s+%[[%d-]+%]%s+(%w+)%s+([-%d%s]*%d)')
+    if op then
+      local nums = parse_nums(nums_str)
+      if ops_info[op] then
+        print(indent(ops_info[op].doc))
+        if func then  -- When not doing "luac -l -l", we have no function data.
+          print(indent(interpret_args(nums, ops_info[op].operand_types, func, tonumber(program_counter_str))))
+        end
+      else
+        print(indent('Warning: opcode ' .. op .. ' unknown.'))
+      end
+    end
+  end
+end
+
+
+function interpret_args(nums, operand_types, func, program_counter)
+
+  local function in_range(lo, x, hi)
+    return x >= lo and x <= hi
+  end
+
+  -- Note: "rep"/"reps" stands for "nice human [rep]resentation".
+
+  local reps = {}
+  for i, num in ipairs(nums) do
+    local typ = operand_types[i]
+    local rep = num
+
+    if typ == 'RK' then
+      typ = (num < 0) and 'Kst' or 'R'
+    end
+
+    if typ == 'R' and func['locals'][num] then
+      local range = assert(func['locals'][num]['range'], 'Internal error: no ranges was parsed for variables')
+      if in_range(range[1]-1, program_counter, range[2]) then
+        rep = rep .. '<' .. func['locals'][num].name .. '>'
+      else
+        if DBG then rep = rep .. '<!!>' end  -- mark variables out of range.
+      end
+      if DBG then rep = rep .. pp(range) end
+    end
+    if typ == 'Kst' and func['constants'][-num] then
+      rep = rep .. '<' .. func['constants'][-num].name .. '>'
+    end
+    if typ == 'UpValue' and func['upvalues'][num] then
+      rep = rep .. '<^' .. func['upvalues'][num].name .. '>'
+    end
+
+    append(reps, rep)
+  end
+  return table.concat(reps, ' ')
+end
+
+------------------------------------ Main ------------------------------------
+
+-- The program's entry point.
+
+local function print_help()
+  print "Please see README.md for how to use this program."
+end
+
+local function main()
+
+  local opts = parse_options(arg)
+
+  local DATA_DIR = dirname(arg[0])
+
+  local ops_info_50 = parse_ops_info(slurp(DATA_DIR .. 'lua50-lopcodes.h'))
+  local ops_info_51 = parse_ops_info(slurp(DATA_DIR .. 'lua51-lopcodes.h'))
+  local ops_info_52 = parse_ops_info(slurp(DATA_DIR .. 'lua52-lopcodes.h'))
+  local ops_info_53 = parse_ops_info(slurp(DATA_DIR .. 'lua53-lopcodes.h'))
+
+  local ops_info = merge({}, ops_info_50, ops_info_51, ops_info_52, ops_info_53)
+
+  for opt, _ in pairs(opts) do
+    if opt == 'lua50' then
+      ops_info = ops_info_50
+    elseif opt == 'lua51' then
+      ops_info = ops_info_51
+    elseif opt == 'lua52' then
+      ops_info = ops_info_52
+    elseif opt == 'lua53' then
+      ops_info = ops_info_53
+    elseif opt == 'help' or opt == 'h' then
+      print_help()
+      os.exit()
+    else
+      error("Unrecognized command-line option --" .. opt)
+    end
+  end
+
+  if DBG then
+    p(ops_info)
+  end
+
+  local src
+  if arg[1] then
+    src = slurp(arg[1])
+  else
+    src = io.read('*a')
+  end
+
+  local funcs_info = parse_funcs_info(src)
+
+  if DBG then
+    p(funcs_info)
+  end
+
+  decorate(src, ops_info, funcs_info)
+
+end
+
+main()
