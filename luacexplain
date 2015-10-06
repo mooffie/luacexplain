@@ -279,15 +279,64 @@ local function decorate(src, ops_info, funcs_info)
   end
 end
 
+---
+-- Find the variable, among 'variables', which is at position 'register'.
+--
+-- We can't just do variables[register]: we must look only at variables
+-- that are in scope.
+--
+local function find_var(register, variables, program_counter)
 
-function interpret_args(nums, operand_types, func, program_counter)
-
-  local function in_range(lo, x, hi)
-    return x >= lo and x <= hi
+  if (register > #variables) or (not variables[0] --[[empty]]) then
+    return  -- speed things up.
   end
 
-  -- Note: "rep"/"reps" stands for "nice human [rep]resentation".
+  local pos = 0
+  for i = 0, #variables do
+    local var = variables[i]
+    if program_counter >= var.range[1] - 1 and program_counter < var.range[2] then
+      if register == pos then
+        -- We also return, as a second value, a "maybe" flag. This
+        -- flag makes the variable name printed with "?" in front.
+        --
+        -- Local variables are recognized one line later of their
+        -- place of declaration, but we want to recognize them one
+        -- line earlier so they appear on initialization lines:
+        --
+        --     local x = 99
+        --
+        -- Which gives us "LOADK 0<?x> -1<99>"
+        --
+        -- That's why we do 'var.range[1] - 1' in our range check.
+        --
+        -- However, when the initializing expression is "complex", as in:
+        --
+        --     local x = a + 10
+        --
+        -- the same register may happen to appear for the right side as well:
+        --
+        --     ADD 0<?x> 0<?x> -2<99>
+        --
+        -- Obviously here, only the first operand above is "x". The second
+        -- isn't. The "?" signals to the user that the labeling may be
+        -- incorrect.
+        --
+        return var, (program_counter == var.range[1] - 1)
+      end
+      pos = pos + 1
+    end
+  end
 
+end
+
+---
+-- Returns, if possible, a humane representation of an opcode's operands
+-- given in 'nums'.
+--
+-- E.g., converts { 3, 4, 8 } to '3<var_name> 4 8<"some constant">'
+--
+function interpret_args(nums, operand_types, func, program_counter)
+  -- Note: "rep"/"reps" stands for "nice human [rep]resentation".
   local reps = {}
   for i, num in ipairs(nums) do
     local typ = operand_types[i]
@@ -297,14 +346,12 @@ function interpret_args(nums, operand_types, func, program_counter)
       typ = (num < 0) and 'Kst' or 'R'
     end
 
-    if typ == 'R' and func['locals'][num] then
-      local range = assert(func['locals'][num]['range'], 'Internal error: no ranges was parsed for variables')
-      if in_range(range[1]-1, program_counter, range[2]) then
-        rep = rep .. '<' .. func['locals'][num].name .. '>'
-      else
-        if DBG then rep = rep .. '<!!>' end  -- mark variables out of range.
+    if typ == 'R' then
+      local var, maybe = find_var(num, func['locals'], program_counter)
+      if var then
+        rep = rep .. '<' .. (maybe and '?' or '') .. var.name .. '>'
+        if DBG then rep = rep .. pp(var.range) end
       end
-      if DBG then rep = rep .. pp(range) end
     end
     if typ == 'Kst' and func['constants'][-num] then
       rep = rep .. '<' .. func['constants'][-num].name .. '>'
