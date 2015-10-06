@@ -270,7 +270,13 @@ local function decorate(src, ops_info, funcs_info)
       if ops_info[op] then
         print(indent(ops_info[op].doc))
         if func then  -- When not doing "luac -l -l", we have no function data.
-          print(indent(interpret_args(nums, ops_info[op].operand_types, func, tonumber(program_counter_str))))
+          if op == 'RETURN' and nums[1] == 0 and nums[2] == 1 then
+            -- This is a special case. "RETURN 0 1" returns nothing and we
+            -- shouldn't confuse the user with its operands.
+            print(indent('--RETURN nothing--'))
+          else
+            print(indent(interpret_args(nums, ops_info[op].operand_types, func, tonumber(program_counter_str))))
+          end
         end
       else
         print(indent('Warning: opcode ' .. op .. ' unknown.'))

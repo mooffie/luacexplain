@@ -1,3 +1,4 @@
+-- This code tests whether our variable lookup (find_var()) is ok.
 
 do
   local a = "one"
