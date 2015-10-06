@@ -89,7 +89,8 @@ is in the source code, if you're interested).
 Upvalues are printed with "^" in front (as in "^c").
 
 To understadd the pseduo-code --the meaning of "R()", "RK()" etc.-- you
-to know a tiny bit about the VM. You can find all the explanatory text you need in either of:
+need to know a tiny bit about the VM. You can find all the explanatory
+text you need in either of:
 
   - ["A No-Frills Introduction to Lua 5.1 VM Instructions"](https://docs.google.com/viewer?a=v&pid=sites&srcid=ZGVmYXVsdGRvbWFpbnxydWJibGVwaWxlc3xneDo2MTdkZDIxZTZjMWFmZmJi), by Kein-Hong Man.
     You need to read **just the first two or three pages**. It's good for any Lua,
@@ -122,8 +123,8 @@ Operation
 
 Simply pipe luac's output to this program, as demonstrated above:
 
-  $ luac -l -l some_script.lua | luacexplain
+    $ luac -l -l some_script.lua | luacexplain
 
 Or you can can supply the input as an argument:
 
-  $ luacexplain previously_saved_luac_output.txt
+    $ luacexplain previously_saved_luac_output.txt
