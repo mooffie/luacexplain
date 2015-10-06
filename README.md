@@ -91,13 +91,13 @@ Upvalues are printed with "^" in front (as in "^c").
 To understadd the pseduo-code --the meaning of "R()", "RK()" etc.-- you
 to know a tiny bit about the VM. You can find all the explanatory text you need in either of:
 
-  - "A No-Frills Introduction to Lua 5.1 VM Instructions", by Kein-Hong Man.
+  - ["A No-Frills Introduction to Lua 5.1 VM Instructions"](https://docs.google.com/viewer?a=v&pid=sites&srcid=ZGVmYXVsdGRvbWFpbnxydWJibGVwaWxlc3xneDo2MTdkZDIxZTZjMWFmZmJi), by Kein-Hong Man.
     You need to read **just the first two or three pages**. It's good for any Lua,
     not just 5.1.
 
   - The comments in [lopcodes.h](http://www.lua.org/source/5.3/lopcodes.h.html).
 
-  - "Lua 5.2 Bytecode and Virtual Machine", by Dirk Laurie (skip
+  - ["Lua 5.2 Bytecode and Virtual Machine"](https://github.com/dlaurie/lua52vm-tools), by Dirk Laurie (skip
     to "Instruction anatomy").
 
 The pseudo code is taken from the 'lopcodes.h' header, which is shipped
